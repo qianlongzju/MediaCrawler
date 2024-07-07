@@ -16,7 +16,7 @@ from var import crawler_type_var
 
 from .client import XiaoHongShuClient
 from .exception import DataFetchError
-from .field import SearchSortType
+from .field import SearchSortType, FeedType
 from .login import XiaoHongShuLogin
 
 
@@ -80,10 +80,52 @@ class XiaoHongShuCrawler(AbstractCrawler):
             elif config.CRAWLER_TYPE == "creator":
                 # Get creator's information and their notes and comments
                 await self.get_creators_and_notes()
+            elif config.CRAWLER_TYPE == "home":
+                # Get creator's information and their notes and comments
+                await self.get_home()
             else:
                 pass
 
             utils.logger.info("[XiaoHongShuCrawler.start] Xhs Crawler finished ...")
+    
+    async def get_home(self) -> None:
+        """home feed"""
+        utils.logger.info("[XiaoHongShuCrawler.get_home] Begin xiaohongshu home_feed")
+        xhs_limit_count = 20  # xhs limit page fixed value
+        if config.CRAWLER_MAX_NOTES_COUNT < xhs_limit_count:
+            config.CRAWLER_MAX_NOTES_COUNT = xhs_limit_count
+        start_page = config.START_PAGE
+        page = 1
+        while (page - start_page + 1) * xhs_limit_count <= config.CRAWLER_MAX_NOTES_COUNT:
+            if page < start_page:
+                utils.logger.info(f"[XiaoHongShuCrawler.search] Skip page {page}")
+                page += 1
+                continue
+
+            try:
+                utils.logger.info(f"[XiaoHongShuCrawler.get_home] get_home xhs page: {page}")
+                note_id_list: List[str] = []
+                notes_res = await self.xhs_client.get_home_feed(FeedType.RECOMMEND)
+                utils.logger.info(f"[XiaoHongShuCrawler.get_home] get_home notes res:{notes_res}")
+                semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY_NUM)
+                task_list = [
+                    self.get_note_detail(post_item.get("id"), semaphore)
+                    for post_item in notes_res.get("items", {})
+                    if ((post_item.get('model_type') not in ('rec_query', 'hot_query'))
+                        and ('租' in post_item.get('note_card').get("display_title"))
+                        )
+                ]
+                note_details = await asyncio.gather(*task_list)
+                for note_detail in note_details:
+                    if note_detail is not None:
+                        await xhs_store.update_xhs_note(note_detail)
+                        note_id_list.append(note_detail.get("note_id"))
+                page += 1
+                utils.logger.info(f"[XiaoHongShuCrawler.get_home] Note details: {note_details}")
+                await self.batch_get_note_comments(note_id_list)
+            except DataFetchError as e:
+                utils.logger.error(f"[XiaoHongShuCrawler.get_home] Get note detail error {e}")
+                break
 
     async def search(self) -> None:
         """Search for notes and retrieve their comment information."""
@@ -114,7 +156,9 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     task_list = [
                         self.get_note_detail(post_item.get("id"), semaphore)
                         for post_item in notes_res.get("items", {})
-                        if post_item.get('model_type') not in ('rec_query', 'hot_query')
+                        if ((post_item.get('model_type') not in ('rec_query', 'hot_query'))
+                            and ('租' in post_item.get('note_card').get("display_title"))
+                            )
                     ]
                     note_details = await asyncio.gather(*task_list)
                     for note_detail in note_details:
@@ -124,8 +168,8 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     page += 1
                     utils.logger.info(f"[XiaoHongShuCrawler.search] Note details: {note_details}")
                     await self.batch_get_note_comments(note_id_list)
-                except DataFetchError:
-                    utils.logger.error("[XiaoHongShuCrawler.search] Get note detail error")
+                except DataFetchError as e:
+                    utils.logger.error(f"[XiaoHongShuCrawler.search] Get note detail error {e}")
                     break
 
     async def get_creators_and_notes(self) -> None:

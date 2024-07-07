@@ -12,7 +12,7 @@ from base.base_crawler import AbstractApiClient
 from tools import utils
 
 from .exception import DataFetchError, IPBlockError
-from .field import SearchNoteType, SearchSortType
+from .field import SearchNoteType, SearchSortType, FeedType
 from .help import get_search_id, sign
 
 
@@ -96,7 +96,29 @@ class XiaoHongShuClient(AbstractApiClient):
             raise IPBlockError(self.IP_ERROR_STR)
         else:
             raise DataFetchError(data.get("msg", None))
+        
+    async def get_home_feed(self, feed_type: FeedType) -> Dict:
+        uri = "/api/sns/web/v1/homefeed"
+        data = {
+            "cursor_score": "",
+            "num": 40,
+            "refresh_type": 1,
+            "note_index": 0,
+            "unread_begin_note_id": "",
+            "unread_end_note_id": "",
+            "unread_note_count": 0,
+            "category": feed_type.value,
+            "search_key": "",
+            "need_num": 40,
+            "image_scenes": ["FD_PRV_WEBP", "FD_WM_WEBP"]
+        }
 
+        # {"cursor_score": "", "num": 31, "refresh_type": 1, "note_index": 0,
+        #  "unread_begin_note_id": "64fa75a9000000001f0076bf", "unread_end_note_id": "64f179d9000000001e03fe81",
+        #  "unread_note_count": 53, "category": "homefeed_recommend", "search_key": "", "need_num": 6,
+        #  "image_scenes": ["FD_PRV_WEBP", "FD_WM_WEBP"]}
+        return await self.post(uri, data)
+    
     async def get(self, uri: str, params=None) -> Dict:
         """
         GET请求，对请求头签名
@@ -247,7 +269,7 @@ class XiaoHongShuClient(AbstractApiClient):
         }
         return await self.get(uri, params)
 
-    async def get_note_all_comments(self, note_id: str, crawl_interval: float = 1.0,
+    async def get_note_all_comments(self, note_id: str, crawl_interval: float = 10.0,
                                     callback: Optional[Callable] = None) -> List[Dict]:
         """
         获取指定笔记下的所有一级评论，该方法会一直查找一个帖子下的所有评论信息
@@ -271,13 +293,40 @@ class XiaoHongShuClient(AbstractApiClient):
                     f"[XiaoHongShuClient.get_note_all_comments] No 'comments' key found in response: {comments_res}")
                 break
             comments = comments_res["comments"]
+            need = True
+            for comment in comments:
+                if comment.get('nickname') == 'isaiah':
+                    need = False
+            content = "亲，看看我的个人主页，位置上海浦东新区世纪大道-源竹小区，靠近2/4/6/9号线，交通方便，房子4楼，一室一厅（厅有独立移门隔开），房东直租，配合办理居住正，价格可商量，本人好说话）"
+            if need:
+                #note_id = "664ed8d30000000016012699"
+                try:
+                    t = await self.comment_note(note_id, content)
+                    utils.logger.info(f"[XiaoHongShuClient.get_note_all_comments] comments under note: {note_id} {t}")
+                    await asyncio.sleep(20.0)
+                except Exception as e:
+                    utils.logger.info(
+                    f"[XiaoHongShuClient.get_note_all_comments] user_ui: {note_id}, exception: {e}")
+                #comments['commented'] = True
+
             if callback:
                 await callback(note_id, comments)
             await asyncio.sleep(crawl_interval)
             result.extend(comments)
-            sub_comments = await self.get_comments_all_sub_comments(comments, crawl_interval, callback)
-            result.extend(sub_comments)
+            comments_has_more = False
+            #sub_comments = await self.get_comments_all_sub_comments(comments, crawl_interval, callback)
+            #result.extend(sub_comments)
         return result
+    
+    async def comment_note(self, note_id: str, content: str):
+        """
+        comment a note
+
+        :rtype: dict
+        """
+        uri = "/api/sns/web/v1/comment/post"
+        data = {"note_id": note_id, "content": content, "at_users": []}
+        return await self.post(uri, data)
     
     async def get_comments_all_sub_comments(self, comments: List[Dict], crawl_interval: float = 1.0,
                                     callback: Optional[Callable] = None) -> List[Dict]:
